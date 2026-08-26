@@ -1,4 +1,4 @@
-﻿[Version = "2.0.0"]
+[Version = "2.2.0"]
 section JamfPro;
 
 // Number of computer or mobile device records to request per page.
@@ -26,7 +26,7 @@ shared JamfPro.Contents = Value.ReplaceType(
 shared JamfPro.JamfNavTable = (url as text) as table =>
     let
         url = validateUrlScheme(url),
-        computerPages = getTotalNumberOfPages(url, "v1/computers-inventory"),
+        computerPages = getTotalNumberOfPages(url, "v4/computers-inventory"),
         mobileDevicesPages = getTotalNumberOfPages(url, "v2/mobile-devices"),
         source = #table(
             {"Name", "Data", "ItemKind", "ItemName", "IsLeaf"},
@@ -67,7 +67,7 @@ getTotalNumberOfPages = (url as text, relativePath as text) as number =>
         pages;
 
 getPageComputers = (url as text, sections as list, page as number) as list =>
-    getPage(url, sections, page, "api/v1/computers-inventory", "id");
+    getPage(url, sections, page, "api/v4/computers-inventory", "id");
 
 getPageMobileDevices = (url as text, sections as list, page as number) as list =>
     getPage(url, sections, page, "api/v2/mobile-devices/detail", "mobileDeviceId");
@@ -87,19 +87,23 @@ getPage = (url as text, sections as list, page as number, path as text, sortKey 
     in
         result;
 
+// Modern Jamf Pro API implementation for Mobile Device Groups
 mobileDeviceGroups = (url as text) as table =>
     let
-        jsonDeviceGroups = JSSResource(url, "/mobiledevicegroups"),
-        deviceGroups = Table.FromRecords(jsonDeviceGroups[mobile_device_groups]),
-        selectedColumns = Table.SelectColumns(deviceGroups, {"id", "name", "is_smart"}),
+        jsonDeviceGroups = UAPIResource(url, "api/v1/mobile-device-groups"),
+        deviceGroups = Table.FromRecords(jsonDeviceGroups[results]),
+        selectedColumns = Table.SelectColumns(deviceGroups, {"id", "name", "isSmart"}),
         groupsPlusMembership = Table.AddColumn(
-            selectedColumns, "temp_column", each getMobileDeviceMembership([id], url), type list
+            selectedColumns,
+            "temp_column",
+            each getMobileDeviceMembership(Number.From([id]), [isSmart], url),
+            type list
         ),
         tempTable = Table.ExpandListColumn(groupsPlusMembership, "temp_column"),
         mobileDeviceGroupExpanded = Table.ExpandRecordColumn(
             tempTable,
             "temp_column",
-            {"id", "name", "mac_address", "udid", "wifi_mac_address", "serial_number"},
+            {"id", "name", "macAddress", "udid", "wifiMacAddress", "serialNumber"},
             {
                 "device_id",
                 "device_name",
@@ -112,37 +116,53 @@ mobileDeviceGroups = (url as text) as table =>
     in
         mobileDeviceGroupExpanded;
 
+// Modern Jamf Pro API implementation for Computer Groups
 computerGroups = (url as text) as table =>
     let
-        jsonComputerGroups = JSSResource(url, "/computergroups"),
-        computerGroups = Table.FromRecords(jsonComputerGroups[computer_groups]),
-        selectedColumns = Table.SelectColumns(computerGroups, {"id", "name", "is_smart"}),
+        jsonComputerGroups = UAPIResource(url, "api/v1/computer-groups"),
+        computerGroups = Table.FromRecords(jsonComputerGroups[results]),
+        selectedColumns = Table.SelectColumns(computerGroups, {"id", "name", "isSmart"}),
         computerGroupsModified = Table.AddColumn(
-            selectedColumns, "temp_column", each getComputerGroupMembershipIds([id], url), type list
+            selectedColumns,
+            "temp_column",
+            each getComputerGroupMembershipIds(Number.From([id]), [isSmart], url),
+            type list
         ),
         tempTable = Table.ExpandListColumn(computerGroupsModified, "temp_column"),
         computerGroupsModifiedExpanded = Table.ExpandRecordColumn(
-            tempTable, "temp_column", {"id", "name"}, {"computer_id", "computer_name"}
+            tempTable,
+            "temp_column",
+            {"id", "name"},
+            {"computer_id", "computer_name"}
         )
     in
         computerGroupsModifiedExpanded;
 
-getComputerGroupMembershipIds = (id as number, baseUrl as text) as list =>
+getComputerGroupMembershipIds = (id as number, isSmart as logical, baseUrl as text) as list =>
     let
-        jsonComputerGroupMembers = JSSResource(baseUrl, "/computergroups/id/" & Number.ToText(id)),
-        computerGroupMembers = try jsonComputerGroupMembers[computer_group][computers] as list otherwise {}
+        relativePath =
+            if isSmart then
+                "api/v2/computer-groups/smart-groups/" & Number.ToText(id)
+            else
+                "api/v2/computer-groups/static-groups/" & Number.ToText(id),
+        jsonGroupDetails = try UAPIResource(baseUrl, relativePath) otherwise [],
+        computerGroupMembers = try jsonGroupDetails[computers] as list otherwise {}
     in
         computerGroupMembers;
 
-getMobileDeviceMembership = (id as number, baseUrl as text) as list =>
+getMobileDeviceMembership = (id as number, isSmart as logical, baseUrl as text) as list =>
     let
-        jsonMobileDeviceGroupMembers = JSSResource(baseUrl, "/mobiledevicegroups/id/" & Number.ToText(id)),
-        mobileDeviceGroupMembers =
-            try jsonMobileDeviceGroupMembers[mobile_device_group][mobile_devices] as list otherwise {}
+        relativePath =
+            if isSmart then
+                "api/v1/mobile-device-groups/smart-groups/" & Number.ToText(id)
+            else
+                "api/v1/mobile-device-groups/static-groups/" & Number.ToText(id),
+        jsonGroupDetails = try UAPIResource(baseUrl, relativePath) otherwise [],
+        mobileDeviceGroupMembers = try jsonGroupDetails[mobileDevices] as list otherwise {}
     in
         mobileDeviceGroupMembers;
 
-// this function acts as our API call for queries
+// Primary API call function for modern Jamf Pro API endpoints
 UAPIResource = (
     baseUrl as text,
     relativepath as text,
@@ -203,57 +223,7 @@ UAPIResource = (
     in
         json;
 
-// this function is the API call for classic Jamf Pro API data
-JSSResource = (
-    baseUrl as text, relativepath as text, optional token as text, optional attempts as number
-) =>
-    let
-        numberOfAttempts = if attempts = null then 1 else (attempts + 1),
-        response =
-            if token = null then
-                Web.Contents(
-                    baseUrl & "/JSSResource",
-                    [
-                        Headers = [
-                            #"Accept" = "application/json",
-                            #"Authorization" = TokenAuthorizationHeader(baseUrl)
-                        ],
-                        RelativePath = relativepath
-                    ]
-                )
-            else
-                Web.Contents(
-                    baseUrl,
-                    [
-                        Headers = [
-                            #"Accept" = "application/json",
-                            #"Authorization" = token
-                        ],
-                        RelativePath = relativepath,
-                        Timeout = Duration.FromText("01:00:00.0"),
-                        ManualStatusHandling = {429, 401},
-                        IsRetry = attempts <> null
-                    ]
-                ),
-        responseMetadata = Value.Metadata(response),
-        responseCode = responseMetadata[Response.Status],
-        responseHeaders = responseMetadata[Headers],
-        json =
-            if responseCode <> 200 and numberOfAttempts < 3 then
-                Function.InvokeAfter(
-                    () =>
-                        @JSSResource(
-                            baseUrl, relativepath, TokenAuthorizationHeader(baseUrl, true),
-                            numberOfAttempts
-                        ),
-                    #duration(0, 0, 0, 3)
-                )
-            else
-                Json.Document(response)
-    in
-        json;
-
-// gets token for auth header in API call
+// Retrieves token for auth header in API calls
 TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
     let
         credentials = Extension.CurrentCredential(),
@@ -278,8 +248,8 @@ TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
                             ]
                         )
                     )[access_token]
-                    in
-                        accessToken
+                in
+                    accessToken
             else
                 Json.Document(
                     Web.Contents(
@@ -328,7 +298,7 @@ computerApplications = (url as text, totalPagesCount as number) as table =>
     in
         result;
 
-// Computer lookup and mapping function. See notes on mobileDevices function for backward compatibility.
+// Computer lookup and mapping function.
 computers = (url as text, totalPagesCount as number) as table =>
     let
         tableFieldsTopLevel = {"id", "computerDetails.udid"},
@@ -351,27 +321,32 @@ computers = (url as text, totalPagesCount as number) as table =>
                         pages,
                         each
                             getPageComputers(
-                                url, {"GENERAL", "DISK_ENCRYPTION", "PURCHASING", "USER_AND_LOCATION", "HARDWARE", "SECURITY", "OPERATING_SYSTEM"}, _
+                                url,
+                                {"GENERAL", "DISK_ENCRYPTION", "PURCHASING", "USER_AND_LOCATION", "HARDWARE", "SECURITY", "OPERATING_SYSTEM"},
+                                _
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
                         rowPerDevice,
-                        {"id", "udid", "general", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
+                        {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
                         MissingField.UseNull
                     ),
                     renameUdid = Table.RenameColumns(selectedColumns, {{"udid", "computerDetails.udid"}}),
                     expandGeneral = Table.ExpandRecordColumn(renameUdid, "general", ComputerMappings[General][api], ComputerMappings[General][mapped]),
-                    expandRemoteManagement = Table.ExpandRecordColumn(expandGeneral, "remoteManagement", ComputerMappings[RemoteManagement][api], ComputerMappings[RemoteManagement][mapped]),
+                    expandSite = Table.ExpandRecordColumn(expandGeneral, "site", ComputerMappings[Site][api], ComputerMappings[Site][mapped]),
+                    expandEnrollmentMethod = Table.ExpandRecordColumn(expandSite, "enrollmentMethod", ComputerMappings[EnrollmentMethod][api], ComputerMappings[EnrollmentMethod][mapped]),
+                    expandRemoteManagement = Table.ExpandRecordColumn(expandEnrollmentMethod, "remoteManagement", ComputerMappings[RemoteManagement][api], ComputerMappings[RemoteManagement][mapped]),
                     expandMdmCapable = Table.ExpandRecordColumn(expandRemoteManagement, "mdmCapable", ComputerMappings[MdmCapable][api], ComputerMappings[MdmCapable][mapped]),
                     expandPurchasing = Table.ExpandRecordColumn(expandMdmCapable, "purchasing", ComputerMappings[Purchasing][api], ComputerMappings[Purchasing][mapped]),
                     expandUserAndLocation = Table.ExpandRecordColumn(expandPurchasing, "userAndLocation", ComputerMappings[UserAndLocation][api], ComputerMappings[UserAndLocation][mapped]),
                     expandHardware = Table.ExpandRecordColumn(expandUserAndLocation, "hardware", ComputerMappings[Hardware][api], ComputerMappings[Hardware][mapped]),
                     expandSecurity = Table.ExpandRecordColumn(expandHardware, "security", ComputerMappings[Security][api], ComputerMappings[Security][mapped]),
                     expandOperatingSystem = Table.ExpandRecordColumn(expandSecurity, "operatingSystem", ComputerMappings[OperatingSystem][api], ComputerMappings[OperatingSystem][mapped]),
+                    expandDiskEncryption = Table.ExpandRecordColumn(expandOperatingSystem, "diskEncryption", ComputerMappings[DiskEncryption][api], ComputerMappings[DiskEncryption][mapped]),
 
-                    // add any unmapped columns to the final table for backward compatibility
-                    withUnmappedColumns = addUnmappedColumns(expandOperatingSystem, ComputerMappings[UnmappedFields]),
+                    // Add legacy unmapped columns, calculate numeric epoch columns, and duplicate aliased fields
+                    withUnmappedColumns = addUnmappedColumns(expandDiskEncryption, ComputerMappings[UnmappedFields]),
                     withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, ComputerMappings[UtcColumnNames]),
                     withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate])
                 in
@@ -379,15 +354,7 @@ computers = (url as text, totalPagesCount as number) as table =>
     in
         result;
 
-/** 
-*  Mobile device lookup and mapping function.
-*
-*  Notes about backward compatibility with the legacy 1.0.0-beta version of the connector:
-*  - "api" fields are those returned by the Jamf Pro API and "mapped" are the fields that will
-*    be displayed in the Power BI table. The remapping was necessary to limit the number of
-*    changes to the legacy data model, in an effort to preserve existing data sets and
-*    visualizations where possible. See MobileDeviceFieldMappings.pqm for the list of mappings.
-*/   
+// Mobile device lookup and mapping function.
 mobileDevices = (url as text, totalPagesCount as number) as table =>
     let
         apiFieldsTopLevel = {"mobileDeviceId", "deviceType"},
@@ -496,7 +463,7 @@ mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
 
 computerExtensionAttributes = (url as text, totalPagesCount as number) as table =>
     let
-        fieldNamesForTable = {"computerDetails.extAttrs.id", "computerDetails.extAttrs.name", "computerDetails.extAttrs.type", "computerDetails.extAttrs.value"} ,
+        fieldNamesForTable = {"computerDetails.extAttrs.id", "computerDetails.extAttrs.name", "computerDetails.extAttrs.type", "computerDetails.extAttrs.value"},
         emptyTable = #table(List.Combine({{"id", "name"}, fieldNamesForTable}), {}),
         result =
             if totalPagesCount = 0 then
@@ -544,7 +511,6 @@ mobileDeviceExtensionAtttributes = (url as text, totalPagesCount as number) as t
         apiFieldsUserAndLocation = {"phoneNumber", "username", "extensionAttributes"},
         tableFieldsUserAndLocation = {"phone_number", "username", "userAndLocation.extensionAttributes"},
 
-        // final column names, including tableFieldsGeneral, tableFieldsHardware, and tableFieldsUserAndLocation, minus anything with `extensionAttributes` in it
         eaFieldNames = {"ExtAttrId", "ExtAttrName", "ExtAttrType", "ExtAttrVal"},
         finalColumnNames = List.Combine(
             {
@@ -620,10 +586,7 @@ dateStringIso8601ToEpochMillis = (dateString as text) as number =>
 
 copyUtcColumnsToEpoch = (t as table, utcColumnNames as list) as table =>
     let
-        // Generate new column names by replacing "_utc" with "_epoch"
         epochColumnNames = List.Transform(utcColumnNames, each Text.Replace(_, "_utc", "_epoch")),
-        
-        // Convert each UTC column to epoch milliseconds and add as a new column
         addEpochColumns = List.Accumulate(
             List.Zip({utcColumnNames, epochColumnNames}),
             t,
