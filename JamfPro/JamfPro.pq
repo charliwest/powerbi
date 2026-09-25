@@ -4,6 +4,22 @@ section JamfPro;
 // Number of computer or mobile device records to request per page.
 PAGE_SIZE = 100;
 
+// All supported sections for v4 computer inventory endpoint.
+COMPUTER_INVENTORY_SECTIONS = {
+    "GENERAL", "DISK_ENCRYPTION", "PURCHASING", "APPLICATIONS", "STORAGE", "USER_AND_LOCATION",
+    "CONFIGURATION_PROFILES", "PRINTERS", "SERVICES", "HARDWARE", "LOCAL_USER_ACCOUNTS",
+    "CERTIFICATES", "ATTACHMENTS", "PACKAGE_RECEIPTS", "SECURITY", "OPERATING_SYSTEM",
+    "LICENSED_SOFTWARE", "IBEACONS", "SOFTWARE_UPDATES", "EXTENSION_ATTRIBUTES", "CONTENT_CACHING",
+    "GROUP_MEMBERSHIPS"
+};
+
+// All supported sections for v2 mobile device inventory detail endpoint.
+MOBILE_DEVICE_INVENTORY_SECTIONS = {
+    "GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "SECURITY", "APPLICATIONS", "EBOOKS",
+    "NETWORK", "SERVICE_SUBSCRIPTIONS", "CERTIFICATES", "PROFILES", "USER_PROFILES",
+    "PROVISIONING_PROFILES", "SHARED_USERS", "GROUPS", "EXTENSION_ATTRIBUTES"
+};
+
 [DataSource.Kind = "JamfPro", Publish = "JamfPro.Publish"]
 // gets initial jamf URL from user; uses this to make requests
 shared JamfPro.Contents = Value.ReplaceType(
@@ -32,6 +48,8 @@ shared JamfPro.JamfNavTable = (url as text) as table =>
             {"Name", "Data", "ItemKind", "ItemName", "IsLeaf"},
             {
                 {"Computers", computers(url, computerPages), "Table", "Table", true},
+                {"Computers - Storage", computerStorage(url, computerPages), "Table", "Table", true},
+                {"Computers - Patch Status", computerPatchStatus(url), "Table", "Table", true},
                 {"Computer Device Groups", computerGroups(url), "Table", "Table", true},
                 {"Computers - Applications", computerApplications(url, computerPages), "Table", "Table", true},
                 {"Computers - Extension attributes", computerExtensionAttributes(url, computerPages), "Table", "Table", true},
@@ -86,6 +104,54 @@ getPage = (url as text, sections as list, page as number, path as text, sortKey 
         )[results]
     in
         result;
+
+buildPagedQuery = (page as number, optional sort as nullable text) as record =>
+    if sort = null then
+        [#"page-size" = Text.From(PAGE_SIZE), page = Text.From(page)]
+    else
+        [#"page-size" = Text.From(PAGE_SIZE), page = Text.From(page), sort = sort];
+
+getPagedResourceResults = (url as text, relativePath as text, optional sort as nullable text) as list =>
+    let
+        firstPage = try UAPIResource(url, relativePath, buildPagedQuery(0, sort)) otherwise null,
+        firstResults = if firstPage = null then {} else (try firstPage[results] as list otherwise {}),
+        totalCount = if firstPage = null then 0 else (try Number.From(firstPage[totalCount]) otherwise List.Count(firstResults)),
+        totalPages = if totalCount = 0 then 0 else Number.RoundUp(totalCount / PAGE_SIZE),
+        otherPages =
+            if totalPages <= 1 then
+                {}
+            else
+                List.Transform(
+                    {1..totalPages - 1},
+                    each
+                        try UAPIResource(url, relativePath, buildPagedQuery(_, sort))[results]
+                        otherwise
+                            {}
+                ),
+        result = List.Combine({firstResults} & otherPages)
+    in
+        result;
+
+patchReleaseDateToDate = (releaseDate as nullable text) as nullable date =>
+    let
+        parsedDateTime =
+            if releaseDate = null or releaseDate = "-1" then
+                null
+            else
+                let
+                    normalized = Text.Replace(releaseDate, " ", "T"),
+                    parsed = try DateTime.FromText(normalized) otherwise try DateTime.FromText(releaseDate) otherwise null
+                in
+                    parsed,
+        parsedDate = if parsedDateTime = null then null else DateTime.Date(parsedDateTime)
+    in
+        parsedDate;
+
+getPatchDefinitions = (url as text, configurationId as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/definitions", "absoluteOrderId:asc");
+
+getPatchReportRows = (url as text, configurationId as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/patch-report", "computerName:asc");
 
 // Modern Jamf Pro API implementation for Mobile Device Groups
 mobileDeviceGroups = (url as text) as table =>
@@ -223,10 +289,12 @@ UAPIResource = (
     in
         json;
 
-// Retrieves token for auth header in API calls
+// Retrieves token for auth header in API calls.
+// Supports either Jamf user credentials or API Client credentials entered as Username + Password.
 TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
     let
         credentials = Extension.CurrentCredential(),
+        retry = if isRetry <> null then isRetry else false,
         token =
             if credentials[AuthenticationKind] = "Key" then
                 let
@@ -244,24 +312,66 @@ TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
                                         & clientIdAndSecret{1}
                                         & "&grant_type=client_credentials"
                                 ),
-                                IsRetry = if isRetry <> null then isRetry else false
+                                IsRetry = retry
                             ]
                         )
                     )[access_token]
                 in
                     accessToken
             else
-                Json.Document(
-                    Web.Contents(
-                        baseUrl,
-                        [
-                            Headers = [],
-                            RelativePath = "/api/v1/auth/token",
-                            Content = Text.ToBinary(""),
-                            IsRetry = if isRetry <> null then isRetry else false
-                        ]
-                    )
-                )[token],
+                let
+                    basicTokenResponse =
+                        try
+                            Json.Document(
+                                Web.Contents(
+                                    baseUrl,
+                                    [
+                                        Headers = [],
+                                        RelativePath = "/api/v1/auth/token",
+                                        Content = Text.ToBinary(""),
+                                        IsRetry = retry
+                                    ]
+                                )
+                            )
+                        otherwise
+                            null,
+                    basicToken = try basicTokenResponse[token] otherwise null,
+                    oauthTokenResponse =
+                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
+                            null
+                        else
+                            try
+                                Json.Document(
+                                    Web.Contents(
+                                        baseUrl,
+                                        [
+                                            Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
+                                            RelativePath = "/api/v1/oauth/token",
+                                            Content = Text.ToBinary(
+                                                Uri.BuildQueryString(
+                                                    [
+                                                        client_id = credentials[Username],
+                                                        client_secret = credentials[Password],
+                                                        grant_type = "client_credentials"
+                                                    ]
+                                                )
+                                            ),
+                                            IsRetry = retry
+                                        ]
+                                    )
+                                )
+                            otherwise
+                                null,
+                    oauthToken = try oauthTokenResponse[access_token] otherwise null,
+                    selectedToken =
+                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
+                            basicToken
+                        else if Value.Is(oauthToken, type text) and Text.Length(oauthToken) > 0 then
+                            oauthToken
+                        else
+                            error "Unable to obtain a Jamf Pro API token with the supplied credentials."
+                in
+                    selectedToken,
 
         token_header = "Bearer " & token
     in
@@ -301,12 +411,15 @@ computerApplications = (url as text, totalPagesCount as number) as table =>
 // Computer lookup and mapping function.
 computers = (url as text, totalPagesCount as number) as table =>
     let
+        apiFieldsTopLevel = {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
         tableFieldsTopLevel = {"id", "computerDetails.udid"},
+        additionalSectionSources = List.Transform(ComputerMappings[AdditionalSectionJsonFields], each _[source]),
         emptyTable = #table(
             List.Combine(
                 {
                     tableFieldsTopLevel,
-                    ComputerMappings[General][mapped]
+                    ComputerMappings[General][mapped],
+                    List.Transform(ComputerMappings[AdditionalSectionJsonFields], each _[mapped])
                 }
             ),
             {}
@@ -322,14 +435,14 @@ computers = (url as text, totalPagesCount as number) as table =>
                         each
                             getPageComputers(
                                 url,
-                                {"GENERAL", "DISK_ENCRYPTION", "PURCHASING", "USER_AND_LOCATION", "HARDWARE", "SECURITY", "OPERATING_SYSTEM"},
+                                COMPUTER_INVENTORY_SECTIONS,
                                 _
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
                         rowPerDevice,
-                        {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
+                        List.Combine({apiFieldsTopLevel, additionalSectionSources}),
                         MissingField.UseNull
                     ),
                     renameUdid = Table.RenameColumns(selectedColumns, {{"udid", "computerDetails.udid"}}),
@@ -348,17 +461,131 @@ computers = (url as text, totalPagesCount as number) as table =>
                     // Add legacy unmapped columns, calculate numeric epoch columns, and duplicate aliased fields
                     withUnmappedColumns = addUnmappedColumns(expandDiskEncryption, ComputerMappings[UnmappedFields]),
                     withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, ComputerMappings[UtcColumnNames]),
-                    withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate])
+                    withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate]),
+                    withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
+                    withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, ComputerMappings[AdditionalSectionJsonFields])
                 in
-                    withDuplicateColumns
+                    withRenamedSectionColumns
+    in
+        result;
+
+computerStorage = (url as text, totalPagesCount as number) as table =>
+    let
+        emptyTable = #table({"id", "computer_name", "computerDetails.storage_json"}, {}),
+        result =
+            if totalPagesCount = 0 then
+                emptyTable
+            else
+                let
+                    pages = {0..totalPagesCount - 1},
+                    listOfPages = List.Transform(
+                        pages,
+                        each getPageComputers(url, {"GENERAL", "STORAGE"}, _)
+                    ),
+                    rowPerDevice = List.Combine(listOfPages),
+                    selectedColumns = Table.FromRecords(
+                        rowPerDevice,
+                        {"id", "general", "storage"},
+                        MissingField.UseNull
+                    ),
+                    expandGeneral = Table.ExpandRecordColumn(selectedColumns, "general", {"name"}, {"computer_name"}),
+                    renameStorage = Table.RenameColumns(expandGeneral, {{"storage", "storageSection"}}, MissingField.Ignore),
+                    normalised = normaliseNestedColumns(renameStorage),
+                    renamed = renameFlattenedSectionColumns(normalised, {[source = "storageSection", mapped = "computerDetails.storage_json"]})
+                in
+                    renamed
+    in
+        result;
+
+computerPatchStatus = (url as text) as table =>
+    let
+        columnNames = {
+            "patch_configuration_id",
+            "patch_display_name",
+            "software_title_id",
+            "software_title_name",
+            "software_title_publisher",
+            "site_id",
+            "computer_id",
+            "computer_name",
+            "username",
+            "operating_system_version",
+            "last_check_in_utc",
+            "building_name",
+            "department_name",
+            "site_name",
+            "installed_version",
+            "version_release_date",
+            "days_since_version_release",
+            "more_than_30_days_since_release"
+        },
+        emptyTable = #table(columnNames, {}),
+        patchConfigurations = try UAPIResource(url, "api/v3/patch-software-title-configurations") otherwise {},
+        configurationRows = if Value.Is(patchConfigurations, type list) then patchConfigurations else {},
+        patchRowsByConfiguration = List.Transform(
+            configurationRows,
+            (configuration) =>
+                let
+                    configurationId = try Text.From(configuration[id]) otherwise null,
+                    definitions = if configurationId = null then {} else getPatchDefinitions(url, configurationId),
+                    reportRows = if configurationId = null then {} else getPatchReportRows(url, configurationId),
+                    reportRowsEnriched = List.Transform(
+                        reportRows,
+                        (reportRow) =>
+                            let
+                                installedVersion = try Text.From(reportRow[version]) otherwise null,
+                                matchingDefinition =
+                                    List.First(
+                                        List.Select(
+                                            definitions,
+                                            each (try Text.From(_[version]) otherwise null) = installedVersion
+                                        ),
+                                        null
+                                    ),
+                                releaseDateText = if matchingDefinition = null then null else (try Text.From(matchingDefinition[releaseDate]) otherwise null),
+                                releaseDate = patchReleaseDateToDate(releaseDateText),
+                                daysSinceRelease = if releaseDate = null then null else Duration.Days(Date.From(DateTime.LocalNow()) - releaseDate),
+                                moreThanThirtyDays = if daysSinceRelease = null then null else daysSinceRelease > 30
+                            in
+                                [
+                                    patch_configuration_id = configurationId,
+                                    patch_display_name = try Text.From(configuration[displayName]) otherwise null,
+                                    software_title_id = try Text.From(configuration[softwareTitleId]) otherwise null,
+                                    software_title_name = try Text.From(configuration[softwareTitleName]) otherwise null,
+                                    software_title_publisher = try Text.From(configuration[softwareTitlePublisher]) otherwise null,
+                                    site_id = try Text.From(configuration[siteId]) otherwise null,
+                                    computer_id = try Text.From(reportRow[deviceId]) otherwise null,
+                                    computer_name = try Text.From(reportRow[computerName]) otherwise null,
+                                    username = try Text.From(reportRow[username]) otherwise null,
+                                    operating_system_version = try Text.From(reportRow[operatingSystemVersion]) otherwise null,
+                                    last_check_in_utc = try DateTimeZone.FromText(reportRow[lastCheckIn]) otherwise null,
+                                    building_name = try Text.From(reportRow[buildingName]) otherwise null,
+                                    department_name = try Text.From(reportRow[departmentName]) otherwise null,
+                                    site_name = try Text.From(reportRow[siteName]) otherwise null,
+                                    installed_version = installedVersion,
+                                    version_release_date = releaseDate,
+                                    days_since_version_release = daysSinceRelease,
+                                    more_than_30_days_since_release = moreThanThirtyDays
+                                ]
+                    )
+                in
+                    reportRowsEnriched
+        ),
+        patchRows = List.Combine(patchRowsByConfiguration),
+        result =
+            if List.Count(patchRows) = 0 then
+                emptyTable
+            else
+                Table.FromRecords(patchRows, columnNames, MissingField.UseNull)
     in
         result;
 
 // Mobile device lookup and mapping function.
 mobileDevices = (url as text, totalPagesCount as number) as table =>
     let
-        apiFieldsTopLevel = {"mobileDeviceId", "deviceType"},
+        apiFieldsTopLevel = {"mobileDeviceId", "deviceType", "general", "hardware", "userAndLocation", "security", "purchasing", "network"},
         tableFieldsTopLevel = {"id", "mobileDeviceDetails.os_type"},
+        additionalSectionSources = List.Transform(MobileDeviceMappings[AdditionalSectionJsonFields], each _[source]),
 
         emptyTable = #table(
             List.Combine(
@@ -370,7 +597,8 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                     MobileDeviceMappings[Security][mapped],
                     MobileDeviceMappings[LostModeLocation][mapped],
                     MobileDeviceMappings[Purchasing][mapped],
-                    MobileDeviceMappings[Network][mapped]
+                    MobileDeviceMappings[Network][mapped],
+                    List.Transform(MobileDeviceMappings[AdditionalSectionJsonFields], each _[mapped])
                 }
             ),
             {}
@@ -385,13 +613,13 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                         pages,
                         each
                             getPageMobileDevices(
-                                url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "SECURITY", "NETWORK", "PURCHASING"}, _
+                                url, MOBILE_DEVICE_INVENTORY_SECTIONS, _
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
                         rowPerDevice,
-                        {"mobileDeviceId", "deviceType", "general", "hardware", "userAndLocation", "security", "purchasing", "network"},
+                        List.Combine({apiFieldsTopLevel, additionalSectionSources}),
                         MissingField.UseNull
                     ),
                     renameTopLevelFields = Table.RenameColumns(selectedColumns, List.Zip({apiFieldsTopLevel, tableFieldsTopLevel})),
@@ -407,9 +635,11 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
 
         withUnmappedColumns = addUnmappedColumns(result, MobileDeviceMappings[UnmappedFields]),
         withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, MobileDeviceMappings[UtcColumnNames]),
-        withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate])
+        withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate]),
+        withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
+        withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, MobileDeviceMappings[AdditionalSectionJsonFields])
     in
-        withDuplicateColumns;
+        withRenamedSectionColumns;
 
 mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
     let
@@ -601,6 +831,104 @@ copyUtcColumnsToEpoch = (t as table, utcColumnNames as list) as table =>
     in
         addEpochColumns;
 
+columnContainsType = (columnValues as list, valueType as type) as logical =>
+    List.AnyTrue(List.Transform(columnValues, each _ <> null and Value.Is(_, valueType)));
+
+expandRecordColumns = (t as table) as table =>
+    let
+        recordColumns = List.Select(
+            Table.ColumnNames(t),
+            each columnContainsType(Table.Column(t, _), type record)
+        ),
+        result = List.Accumulate(
+            recordColumns,
+            t,
+            (state, current) =>
+                let
+                    recordValues = List.Select(Table.Column(state, current), each _ <> null and Value.Is(_, type record)),
+                    fieldNames = List.Sort(List.Union(List.Transform(recordValues, each Record.FieldNames(_))))
+                in
+                    if List.Count(fieldNames) = 0 then
+                        state
+                    else
+                        Table.ExpandRecordColumn(
+                            state,
+                            current,
+                            fieldNames,
+                            List.Transform(fieldNames, each current & "." & _)
+                        )
+        )
+    in
+        result;
+
+expandRecordsRecursively = (t as table) as table =>
+    let
+        expanded = expandRecordColumns(t),
+        madeProgress = not List.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
+        hasRecordColumns = List.AnyTrue(
+            List.Transform(
+                Table.ColumnNames(expanded),
+                each columnContainsType(Table.Column(expanded, _), type record)
+            )
+        ),
+        result = if hasRecordColumns and madeProgress then @expandRecordsRecursively(expanded) else expanded
+    in
+        result;
+
+normaliseNestedColumns = (t as table) as table =>
+    let
+        expanded = expandRecordsRecursively(t),
+        complexColumns = List.Select(
+            Table.ColumnNames(expanded),
+            each
+                columnContainsType(Table.Column(expanded, _), type list)
+                    or columnContainsType(Table.Column(expanded, _), type record)
+        ),
+        result = List.Accumulate(
+            complexColumns,
+            expanded,
+            (state, current) =>
+                Table.TransformColumns(
+                    state,
+                    {{current, each if _ = null then null else Text.FromBinary(Json.FromValue(_)), type nullable text}}
+                )
+        )
+    in
+        result;
+
+renameFlattenedSectionColumns = (t as table, sectionMappings as list) as table =>
+    let
+        renamePairs = List.Combine(
+            List.Transform(
+                sectionMappings,
+                (mapping) =>
+                    let
+                        sourceName = mapping[source],
+                        mappedName = mapping[mapped],
+                        mappedPrefix = Text.BeforeDelimiter(mappedName, "_json"),
+                        sourceColumns = List.Select(
+                            Table.ColumnNames(t),
+                            each _ = sourceName or Text.StartsWith(_, sourceName & ".")
+                        ),
+                        pairs = List.Transform(
+                            sourceColumns,
+                            each
+                                {
+                                    _,
+                                    if _ = sourceName then
+                                        mappedName
+                                    else
+                                        mappedPrefix & "." & Text.Range(_, Text.Length(sourceName) + 1)
+                                }
+                        )
+                    in
+                        pairs
+            )
+        ),
+        result = Table.RenameColumns(t, renamePairs, MissingField.Ignore)
+    in
+        result;
+
 addUnmappedColumns = (t as table, unmappedFields as list) as table =>
     let
         result = List.Accumulate(
@@ -635,10 +963,6 @@ JamfPro = [
     Authentication = [
         UsernamePassword = [
             Label = Extension.LoadString("AuthLabelUsernamePassword")
-        ],
-        Key = [
-            Label = Extension.LoadString("AuthLabelApiClientKey"),
-            KeyLabel = Extension.LoadString("AuthLabelApiClientKeyLabel")
         ]
     ],
     Label = Extension.LoadString("DataSourceLabel")

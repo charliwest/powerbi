@@ -13,7 +13,7 @@ shared Testing.UnitTest = [
         // this test checks that the global navigation table for the query returns the correct number of global tables / rows
         // swap out the URL in JamfPro.Contents() for the Jamf Pro instance URL 
         // then add credentials using the Power Query SDK credential helper
-        Fact("Nav table should return 8 rows", 8, Table.RowCount(result))
+        Fact("Nav table should return 10 rows", 10, Table.RowCount(result))
     },
     report = Facts.Summarize(facts)
 ][report];
