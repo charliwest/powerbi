@@ -118,7 +118,7 @@
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
   <data name="FunctionName" xml:space="preserve">
-    <value>Jamf Pro</value>
+    <value>Jamf Pro Canary</value>
   </data>
   <data name="FunctionParamJamfUrlName" xml:space="preserve">
     <value>URL</value>
@@ -133,10 +133,10 @@
     <value>Import data from Jamf Pro</value>
   </data>
   <data name="ButtonTitle" xml:space="preserve">
-    <value>Jamf Pro</value>
+    <value>Jamf Pro Canary</value>
   </data>
   <data name="DataSourceLabel" xml:space="preserve">
-    <value>Jamf Pro</value>
+    <value>Jamf Pro Canary</value>
   </data>
   <data name="AuthLabelUsernamePassword" xml:space="preserve">
     <value>Username/Password or API Client ID/Secret</value>

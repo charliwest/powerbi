@@ -1,5 +1,5 @@
 [Version = "2.1.0"]
-section JamfPro;
+section JamfProCanary;
 
 // Number of computer or mobile device records to request per page.
 PAGE_SIZE = 100;
@@ -20,9 +20,9 @@ MOBILE_DEVICE_INVENTORY_SECTIONS = {
     "PROVISIONING_PROFILES", "SHARED_USERS", "GROUPS", "EXTENSION_ATTRIBUTES"
 };
 
-[DataSource.Kind = "JamfPro", Publish = "JamfPro.Publish"]
+[DataSource.Kind = "JamfProCanary", Publish = "JamfProCanary.Publish"]
 // gets initial jamf URL from user; uses this to make requests
-shared JamfPro.Contents = Value.ReplaceType(
+shared JamfProCanary.Contents = Value.ReplaceType(
     JamfPro.JamfNavTable,
     type function (
         jamfUrl as (
@@ -39,7 +39,7 @@ shared JamfPro.Contents = Value.ReplaceType(
 );
 
 // sets initial navigation table that links to individual table queries
-shared JamfPro.JamfNavTable = (url as text) as table =>
+shared JamfProCanary.JamfNavTable = (url as text) as table =>
     let
         url = validateUrlScheme(url),
         computerPages = getTotalNumberOfPages(url, "v4/computers-inventory"),
@@ -958,8 +958,8 @@ duplicateColumns = (t as table, fieldsToDuplicate as list) as table =>
         result;
 
 // Data Source definition
-JamfPro = [
-    TestConnection = (dataSourcePath) => {"JamfPro.JamfNavTable", dataSourcePath},
+JamfProCanary = [
+    TestConnection = (dataSourcePath) => {"JamfProCanary.JamfNavTable", dataSourcePath},
     Authentication = [
         UsernamePassword = [
             Label = Extension.LoadString("AuthLabelUsernamePassword")
@@ -969,7 +969,7 @@ JamfPro = [
 ];
 
 // Data Source UI publishing description
-JamfPro.Publish = [
+JamfProCanary.Publish = [
     Beta = false,
     Category = "Other",
     ButtonText = {Extension.LoadString("ButtonTitle"), Extension.LoadString("ButtonHelp")},
