@@ -48,6 +48,7 @@ shared JamfPro.JamfNavTable = (url as text) as table =>
             {"Name", "Data", "ItemKind", "ItemName", "IsLeaf"},
             {
                 {"Computers", computers(url, computerPages), "Table", "Table", true},
+                {"Computers - Storage", computerStorage(url, computerPages), "Table", "Table", true},
                 {"Computer Device Groups", computerGroups(url), "Table", "Table", true},
                 {"Computers - Applications", computerApplications(url, computerPages), "Table", "Table", true},
                 {"Computers - Extension attributes", computerExtensionAttributes(url, computerPages), "Table", "Table", true},
@@ -372,6 +373,34 @@ computers = (url as text, totalPagesCount as number) as table =>
                     withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, ComputerMappings[AdditionalSectionJsonFields])
                 in
                     withRenamedSectionColumns
+    in
+        result;
+
+computerStorage = (url as text, totalPagesCount as number) as table =>
+    let
+        emptyTable = #table({"id", "computer_name", "computerDetails.storage_json"}, {}),
+        result =
+            if totalPagesCount = 0 then
+                emptyTable
+            else
+                let
+                    pages = {0..totalPagesCount - 1},
+                    listOfPages = List.Transform(
+                        pages,
+                        each getPageComputers(url, {"GENERAL", "STORAGE"}, _)
+                    ),
+                    rowPerDevice = List.Combine(listOfPages),
+                    selectedColumns = Table.FromRecords(
+                        rowPerDevice,
+                        {"id", "general", "storage"},
+                        MissingField.UseNull
+                    ),
+                    expandGeneral = Table.ExpandRecordColumn(selectedColumns, "general", {"name"}, {"computer_name"}),
+                    renameStorage = Table.RenameColumns(expandGeneral, {{"storage", "storageSection"}}, MissingField.Ignore),
+                    normalised = normaliseNestedColumns(renameStorage),
+                    renamed = renameFlattenedSectionColumns(normalised, {[source = "storageSection", mapped = "computerDetails.storage_json"]})
+                in
+                    renamed
     in
         result;
 
