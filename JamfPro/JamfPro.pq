@@ -864,7 +864,7 @@ expandRecordColumns = (t as table) as table =>
 expandRecordsRecursively = (t as table) as table =>
     let
         expanded = expandRecordColumns(t),
-        madeProgress = not List.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
+        madeProgress = not Value.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
         hasRecordColumns = List.AnyTrue(
             List.Transform(
                 Table.ColumnNames(expanded),
