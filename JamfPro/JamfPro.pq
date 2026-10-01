@@ -49,6 +49,7 @@ shared JamfPro.JamfNavTable = (url as text) as table =>
             {
                 {"Computers", computers(url, computerPages), "Table", "Table", true},
                 {"Computers - Storage", computerStorage(url, computerPages), "Table", "Table", true},
+                {"Computers - Patch Status", computerPatchStatus(url), "Table", "Table", true},
                 {"Computer Device Groups", computerGroups(url), "Table", "Table", true},
                 {"Computers - Applications", computerApplications(url, computerPages), "Table", "Table", true},
                 {"Computers - Extension attributes", computerExtensionAttributes(url, computerPages), "Table", "Table", true},
@@ -103,6 +104,54 @@ getPage = (url as text, sections as list, page as number, path as text, sortKey 
         )[results]
     in
         result;
+
+buildPagedQuery = (page as number, optional sort as nullable text) as record =>
+    if sort = null then
+        [#"page-size" = Text.From(PAGE_SIZE), page = Text.From(page)]
+    else
+        [#"page-size" = Text.From(PAGE_SIZE), page = Text.From(page), sort = sort];
+
+getPagedResourceResults = (url as text, relativePath as text, optional sort as nullable text) as list =>
+    let
+        firstPage = try UAPIResource(url, relativePath, buildPagedQuery(0, sort)) otherwise null,
+        firstResults = if firstPage = null then {} else (try firstPage[results] as list otherwise {}),
+        totalCount = if firstPage = null then 0 else (try Number.From(firstPage[totalCount]) otherwise List.Count(firstResults)),
+        totalPages = if totalCount = 0 then 0 else Number.RoundUp(totalCount / PAGE_SIZE),
+        otherPages =
+            if totalPages <= 1 then
+                {}
+            else
+                List.Transform(
+                    {1..totalPages - 1},
+                    each
+                        try UAPIResource(url, relativePath, buildPagedQuery(_, sort))[results]
+                        otherwise
+                            {}
+                ),
+        result = List.Combine({firstResults} & otherPages)
+    in
+        result;
+
+patchReleaseDateToDate = (releaseDate as nullable text) as nullable date =>
+    let
+        parsedDateTime =
+            if releaseDate = null or releaseDate = "-1" then
+                null
+            else
+                let
+                    normalized = Text.Replace(releaseDate, " ", "T"),
+                    parsed = try DateTime.FromText(normalized) otherwise try DateTime.FromText(releaseDate) otherwise null
+                in
+                    parsed,
+        parsedDate = if parsedDateTime = null then null else DateTime.Date(parsedDateTime)
+    in
+        parsedDate;
+
+getPatchDefinitions = (url as text, configurationId as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/definitions", "absoluteOrderId:asc");
+
+getPatchReportRows = (url as text, configurationId as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/patch-report", "computerName:asc");
 
 // Modern Jamf Pro API implementation for Mobile Device Groups
 mobileDeviceGroups = (url as text) as table =>
@@ -401,6 +450,89 @@ computerStorage = (url as text, totalPagesCount as number) as table =>
                     renamed = renameFlattenedSectionColumns(normalised, {[source = "storageSection", mapped = "computerDetails.storage_json"]})
                 in
                     renamed
+    in
+        result;
+
+computerPatchStatus = (url as text) as table =>
+    let
+        columnNames = {
+            "patch_configuration_id",
+            "patch_display_name",
+            "software_title_id",
+            "software_title_name",
+            "software_title_publisher",
+            "site_id",
+            "computer_id",
+            "computer_name",
+            "username",
+            "operating_system_version",
+            "last_check_in_utc",
+            "building_name",
+            "department_name",
+            "site_name",
+            "installed_version",
+            "version_release_date",
+            "days_since_version_release",
+            "more_than_30_days_since_release"
+        },
+        emptyTable = #table(columnNames, {}),
+        patchConfigurations = try UAPIResource(url, "api/v3/patch-software-title-configurations") otherwise {},
+        configurationRows = if Value.Is(patchConfigurations, type list) then patchConfigurations else {},
+        patchRowsByConfiguration = List.Transform(
+            configurationRows,
+            (configuration) =>
+                let
+                    configurationId = try Text.From(configuration[id]) otherwise null,
+                    definitions = if configurationId = null then {} else getPatchDefinitions(url, configurationId),
+                    reportRows = if configurationId = null then {} else getPatchReportRows(url, configurationId),
+                    reportRowsEnriched = List.Transform(
+                        reportRows,
+                        (reportRow) =>
+                            let
+                                installedVersion = try Text.From(reportRow[version]) otherwise null,
+                                matchingDefinition =
+                                    List.First(
+                                        List.Select(
+                                            definitions,
+                                            each (try Text.From(_[version]) otherwise null) = installedVersion
+                                        ),
+                                        null
+                                    ),
+                                releaseDateText = if matchingDefinition = null then null else (try Text.From(matchingDefinition[releaseDate]) otherwise null),
+                                releaseDate = patchReleaseDateToDate(releaseDateText),
+                                daysSinceRelease = if releaseDate = null then null else Duration.Days(Date.From(DateTime.LocalNow()) - releaseDate),
+                                moreThanThirtyDays = if daysSinceRelease = null then null else daysSinceRelease > 30
+                            in
+                                [
+                                    patch_configuration_id = configurationId,
+                                    patch_display_name = try Text.From(configuration[displayName]) otherwise null,
+                                    software_title_id = try Text.From(configuration[softwareTitleId]) otherwise null,
+                                    software_title_name = try Text.From(configuration[softwareTitleName]) otherwise null,
+                                    software_title_publisher = try Text.From(configuration[softwareTitlePublisher]) otherwise null,
+                                    site_id = try Text.From(configuration[siteId]) otherwise null,
+                                    computer_id = try Text.From(reportRow[deviceId]) otherwise null,
+                                    computer_name = try Text.From(reportRow[computerName]) otherwise null,
+                                    username = try Text.From(reportRow[username]) otherwise null,
+                                    operating_system_version = try Text.From(reportRow[operatingSystemVersion]) otherwise null,
+                                    last_check_in_utc = try DateTimeZone.FromText(reportRow[lastCheckIn]) otherwise null,
+                                    building_name = try Text.From(reportRow[buildingName]) otherwise null,
+                                    department_name = try Text.From(reportRow[departmentName]) otherwise null,
+                                    site_name = try Text.From(reportRow[siteName]) otherwise null,
+                                    installed_version = installedVersion,
+                                    version_release_date = releaseDate,
+                                    days_since_version_release = daysSinceRelease,
+                                    more_than_30_days_since_release = moreThanThirtyDays
+                                ]
+                    )
+                in
+                    reportRowsEnriched
+        ),
+        patchRows = List.Combine(patchRowsByConfiguration),
+        result =
+            if List.Count(patchRows) = 0 then
+                emptyTable
+            else
+                Table.FromRecords(patchRows, columnNames, MissingField.UseNull)
     in
         result;
 
