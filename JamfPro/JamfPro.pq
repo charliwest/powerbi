@@ -23,7 +23,7 @@ MOBILE_DEVICE_INVENTORY_SECTIONS = {
 [DataSource.Kind = "JamfProCanary", Publish = "JamfProCanary.Publish"]
 // gets initial jamf URL from user; uses this to make requests
 shared JamfProCanary.Contents = Value.ReplaceType(
-    JamfPro.JamfNavTable,
+    JamfProCanary.JamfNavTable,
     type function (
         jamfUrl as (
             Uri.Type meta [
