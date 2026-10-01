@@ -317,12 +317,15 @@ computerApplications = (url as text, totalPagesCount as number) as table =>
 // Computer lookup and mapping function.
 computers = (url as text, totalPagesCount as number) as table =>
     let
+        apiFieldsTopLevel = {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
         tableFieldsTopLevel = {"id", "computerDetails.udid"},
+        additionalSectionSources = List.Transform(ComputerMappings[AdditionalSectionJsonFields], each _[source]),
         emptyTable = #table(
             List.Combine(
                 {
                     tableFieldsTopLevel,
-                    ComputerMappings[General][mapped]
+                    ComputerMappings[General][mapped],
+                    List.Transform(ComputerMappings[AdditionalSectionJsonFields], each _[mapped])
                 }
             ),
             {}
@@ -345,7 +348,7 @@ computers = (url as text, totalPagesCount as number) as table =>
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
                         rowPerDevice,
-                        {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
+                        List.Combine({apiFieldsTopLevel, additionalSectionSources}),
                         MissingField.UseNull
                     ),
                     renameUdid = Table.RenameColumns(selectedColumns, {{"udid", "computerDetails.udid"}}),
@@ -364,17 +367,20 @@ computers = (url as text, totalPagesCount as number) as table =>
                     // Add legacy unmapped columns, calculate numeric epoch columns, and duplicate aliased fields
                     withUnmappedColumns = addUnmappedColumns(expandDiskEncryption, ComputerMappings[UnmappedFields]),
                     withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, ComputerMappings[UtcColumnNames]),
-                    withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate])
+                    withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate]),
+                    withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
+                    withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, ComputerMappings[AdditionalSectionJsonFields])
                 in
-                    withDuplicateColumns
+                    withRenamedSectionColumns
     in
         result;
 
 // Mobile device lookup and mapping function.
 mobileDevices = (url as text, totalPagesCount as number) as table =>
     let
-        apiFieldsTopLevel = {"mobileDeviceId", "deviceType"},
+        apiFieldsTopLevel = {"mobileDeviceId", "deviceType", "general", "hardware", "userAndLocation", "security", "purchasing", "network"},
         tableFieldsTopLevel = {"id", "mobileDeviceDetails.os_type"},
+        additionalSectionSources = List.Transform(MobileDeviceMappings[AdditionalSectionJsonFields], each _[source]),
 
         emptyTable = #table(
             List.Combine(
@@ -386,7 +392,8 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                     MobileDeviceMappings[Security][mapped],
                     MobileDeviceMappings[LostModeLocation][mapped],
                     MobileDeviceMappings[Purchasing][mapped],
-                    MobileDeviceMappings[Network][mapped]
+                    MobileDeviceMappings[Network][mapped],
+                    List.Transform(MobileDeviceMappings[AdditionalSectionJsonFields], each _[mapped])
                 }
             ),
             {}
@@ -407,7 +414,7 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
                         rowPerDevice,
-                        {"mobileDeviceId", "deviceType", "general", "hardware", "userAndLocation", "security", "purchasing", "network"},
+                        List.Combine({apiFieldsTopLevel, additionalSectionSources}),
                         MissingField.UseNull
                     ),
                     renameTopLevelFields = Table.RenameColumns(selectedColumns, List.Zip({apiFieldsTopLevel, tableFieldsTopLevel})),
@@ -423,9 +430,11 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
 
         withUnmappedColumns = addUnmappedColumns(result, MobileDeviceMappings[UnmappedFields]),
         withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, MobileDeviceMappings[UtcColumnNames]),
-        withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate])
+        withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate]),
+        withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
+        withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, MobileDeviceMappings[AdditionalSectionJsonFields])
     in
-        withDuplicateColumns;
+        withRenamedSectionColumns;
 
 mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
     let
@@ -616,6 +625,104 @@ copyUtcColumnsToEpoch = (t as table, utcColumnNames as list) as table =>
         )
     in
         addEpochColumns;
+
+columnContainsType = (columnValues as list, valueType as type) as logical =>
+    List.AnyTrue(List.Transform(columnValues, each _ <> null and Value.Is(_, valueType)));
+
+expandRecordColumns = (t as table) as table =>
+    let
+        recordColumns = List.Select(
+            Table.ColumnNames(t),
+            each columnContainsType(Table.Column(t, _), type record)
+        ),
+        result = List.Accumulate(
+            recordColumns,
+            t,
+            (state, current) =>
+                let
+                    recordValues = List.Select(Table.Column(state, current), each _ <> null and Value.Is(_, type record)),
+                    fieldNames = List.Sort(List.Union(List.Transform(recordValues, each Record.FieldNames(_))))
+                in
+                    if List.Count(fieldNames) = 0 then
+                        state
+                    else
+                        Table.ExpandRecordColumn(
+                            state,
+                            current,
+                            fieldNames,
+                            List.Transform(fieldNames, each current & "." & _)
+                        )
+        )
+    in
+        result;
+
+expandRecordsRecursively = (t as table) as table =>
+    let
+        expanded = expandRecordColumns(t),
+        madeProgress = not List.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
+        hasRecordColumns = List.AnyTrue(
+            List.Transform(
+                Table.ColumnNames(expanded),
+                each columnContainsType(Table.Column(expanded, _), type record)
+            )
+        ),
+        result = if hasRecordColumns and madeProgress then @expandRecordsRecursively(expanded) else expanded
+    in
+        result;
+
+normaliseNestedColumns = (t as table) as table =>
+    let
+        expanded = expandRecordsRecursively(t),
+        complexColumns = List.Select(
+            Table.ColumnNames(expanded),
+            each
+                columnContainsType(Table.Column(expanded, _), type list)
+                    or columnContainsType(Table.Column(expanded, _), type record)
+        ),
+        result = List.Accumulate(
+            complexColumns,
+            expanded,
+            (state, current) =>
+                Table.TransformColumns(
+                    state,
+                    {{current, each if _ = null then null else Text.FromBinary(Json.FromValue(_)), type nullable text}}
+                )
+        )
+    in
+        result;
+
+renameFlattenedSectionColumns = (t as table, sectionMappings as list) as table =>
+    let
+        renamePairs = List.Combine(
+            List.Transform(
+                sectionMappings,
+                (mapping) =>
+                    let
+                        sourceName = mapping[source],
+                        mappedName = mapping[mapped],
+                        mappedPrefix = Text.BeforeDelimiter(mappedName, "_json"),
+                        sourceColumns = List.Select(
+                            Table.ColumnNames(t),
+                            each _ = sourceName or Text.StartsWith(_, sourceName & ".")
+                        ),
+                        pairs = List.Transform(
+                            sourceColumns,
+                            each
+                                {
+                                    _,
+                                    if _ = sourceName then
+                                        mappedName
+                                    else
+                                        mappedPrefix & "." & Text.Range(_, Text.Length(sourceName) + 1)
+                                }
+                        )
+                    in
+                        pairs
+            )
+        ),
+        result = Table.RenameColumns(t, renamePairs, MissingField.Ignore)
+    in
+        result;
 
 addUnmappedColumns = (t as table, unmappedFields as list) as table =>
     let
