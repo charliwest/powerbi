@@ -462,10 +462,10 @@ computers = (url as text, totalPagesCount as number) as table =>
                     withUnmappedColumns = addUnmappedColumns(expandDiskEncryption, ComputerMappings[UnmappedFields]),
                     withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, ComputerMappings[UtcColumnNames]),
                     withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate]),
-                    withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
-                    withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, ComputerMappings[AdditionalSectionJsonFields])
+                    withAdditionalSectionJson = serialiseSectionColumns(withDuplicateColumns, ComputerMappings[AdditionalSectionJsonFields]),
+                    finalResult = Table.RemoveColumns(withAdditionalSectionJson, additionalSectionSources, MissingField.Ignore)
                 in
-                    withRenamedSectionColumns
+                    finalResult
     in
         result;
 
@@ -636,10 +636,10 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
         withUnmappedColumns = addUnmappedColumns(result, MobileDeviceMappings[UnmappedFields]),
         withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, MobileDeviceMappings[UtcColumnNames]),
         withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate]),
-        withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
-        withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, MobileDeviceMappings[AdditionalSectionJsonFields])
+        withAdditionalSectionJson = serialiseSectionColumns(withDuplicateColumns, MobileDeviceMappings[AdditionalSectionJsonFields]),
+        finalResult = Table.RemoveColumns(withAdditionalSectionJson, additionalSectionSources, MissingField.Ignore)
     in
-        withRenamedSectionColumns;
+        finalResult;
 
 mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
     let
@@ -830,6 +830,24 @@ copyUtcColumnsToEpoch = (t as table, utcColumnNames as list) as table =>
         )
     in
         addEpochColumns;
+
+serialiseSectionColumns = (t as table, sectionMappings as list) as table =>
+    let
+        toJsonText = (value as any) as nullable text =>
+            if value = null then null else Text.FromBinary(Json.FromValue(value)),
+        result = List.Accumulate(
+            sectionMappings,
+            t,
+            (state, current) =>
+                Table.AddColumn(
+                    state,
+                    current[mapped],
+                    each try toJsonText(Record.Field(_, current[source])) otherwise null,
+                    type nullable text
+                )
+        )
+    in
+        result;
 
 columnContainsType = (columnValues as list, valueType as type) as logical =>
     List.AnyTrue(List.Transform(columnValues, each _ <> null and Value.Is(_, valueType)));
