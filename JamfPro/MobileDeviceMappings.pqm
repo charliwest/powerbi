@@ -165,6 +165,18 @@
         [original = "model_identifier",                          duplicate = "modelIdentifier"]
     },
 
+    AdditionalSectionJsonFields = {
+        [source = "applications",           mapped = "mobileDeviceDetails.applications_json"],
+        [source = "ebooks",                 mapped = "mobileDeviceDetails.ebooks_json"],
+        [source = "serviceSubscriptions",   mapped = "mobileDeviceDetails.service_subscriptions_json"],
+        [source = "certificates",           mapped = "mobileDeviceDetails.certificates_json"],
+        [source = "profiles",               mapped = "mobileDeviceDetails.profiles_json"],
+        [source = "userProfiles",           mapped = "mobileDeviceDetails.user_profiles_json"],
+        [source = "provisioningProfiles",   mapped = "mobileDeviceDetails.provisioning_profiles_json"],
+        [source = "sharedUsers",            mapped = "mobileDeviceDetails.shared_users_json"],
+        [source = "groups",                 mapped = "mobileDeviceDetails.groups_json"]
+    },
+
     General =          [api = ApiFields(GeneralFields),          mapped = TableFields(GeneralFields)],
     Hardware =         [api = ApiFields(HardwareFields),         mapped = TableFields(HardwareFields)],
     UserAndLocation =  [api = ApiFields(UserAndLocationFields),  mapped = TableFields(UserAndLocationFields)],
