@@ -289,10 +289,12 @@ UAPIResource = (
     in
         json;
 
-// Retrieves token for auth header in API calls
+// Retrieves token for auth header in API calls.
+// Supports either Jamf user credentials or API Client credentials entered as Username + Password.
 TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
     let
         credentials = Extension.CurrentCredential(),
+        retry = if isRetry <> null then isRetry else false,
         token =
             if credentials[AuthenticationKind] = "Key" then
                 let
@@ -310,24 +312,66 @@ TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
                                         & clientIdAndSecret{1}
                                         & "&grant_type=client_credentials"
                                 ),
-                                IsRetry = if isRetry <> null then isRetry else false
+                                IsRetry = retry
                             ]
                         )
                     )[access_token]
                 in
                     accessToken
             else
-                Json.Document(
-                    Web.Contents(
-                        baseUrl,
-                        [
-                            Headers = [],
-                            RelativePath = "/api/v1/auth/token",
-                            Content = Text.ToBinary(""),
-                            IsRetry = if isRetry <> null then isRetry else false
-                        ]
-                    )
-                )[token],
+                let
+                    basicTokenResponse =
+                        try
+                            Json.Document(
+                                Web.Contents(
+                                    baseUrl,
+                                    [
+                                        Headers = [],
+                                        RelativePath = "/api/v1/auth/token",
+                                        Content = Text.ToBinary(""),
+                                        IsRetry = retry
+                                    ]
+                                )
+                            )
+                        otherwise
+                            null,
+                    basicToken = try basicTokenResponse[token] otherwise null,
+                    oauthTokenResponse =
+                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
+                            null
+                        else
+                            try
+                                Json.Document(
+                                    Web.Contents(
+                                        baseUrl,
+                                        [
+                                            Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
+                                            RelativePath = "/api/v1/oauth/token",
+                                            Content = Text.ToBinary(
+                                                Uri.BuildQueryString(
+                                                    [
+                                                        client_id = credentials[Username],
+                                                        client_secret = credentials[Password],
+                                                        grant_type = "client_credentials"
+                                                    ]
+                                                )
+                                            ),
+                                            IsRetry = retry
+                                        ]
+                                    )
+                                )
+                            otherwise
+                                null,
+                    oauthToken = try oauthTokenResponse[access_token] otherwise null,
+                    selectedToken =
+                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
+                            basicToken
+                        else if Value.Is(oauthToken, type text) and Text.Length(oauthToken) > 0 then
+                            oauthToken
+                        else
+                            error "Unable to obtain a Jamf Pro API token with the supplied credentials."
+                in
+                    selectedToken,
 
         token_header = "Bearer " & token
     in
@@ -919,10 +963,6 @@ JamfPro = [
     Authentication = [
         UsernamePassword = [
             Label = Extension.LoadString("AuthLabelUsernamePassword")
-        ],
-        Key = [
-            Label = Extension.LoadString("AuthLabelApiClientKey"),
-            KeyLabel = Extension.LoadString("AuthLabelApiClientKeyLabel")
         ]
     ],
     Label = Extension.LoadString("DataSourceLabel")

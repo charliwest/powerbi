@@ -139,12 +139,6 @@
     <value>Jamf Pro</value>
   </data>
   <data name="AuthLabelUsernamePassword" xml:space="preserve">
-    <value>Username Password</value>
-  </data>
-  <data name="AuthLabelApiClientKey" xml:space="preserve">
-    <value>API Client</value>
-  </data>
-  <data name="AuthLabelApiClientKeyLabel" xml:space="preserve">
-    <value>Enter as client_id:client_secret</value>
+    <value>Username/Password or API Client ID/Secret</value>
   </data>
 </root>
