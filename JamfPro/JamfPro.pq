@@ -4,6 +4,22 @@ section JamfPro;
 // Number of computer or mobile device records to request per page.
 PAGE_SIZE = 100;
 
+// All supported sections for v4 computer inventory endpoint.
+COMPUTER_INVENTORY_SECTIONS = {
+    "GENERAL", "DISK_ENCRYPTION", "PURCHASING", "APPLICATIONS", "STORAGE", "USER_AND_LOCATION",
+    "CONFIGURATION_PROFILES", "PRINTERS", "SERVICES", "HARDWARE", "LOCAL_USER_ACCOUNTS",
+    "CERTIFICATES", "ATTACHMENTS", "PACKAGE_RECEIPTS", "SECURITY", "OPERATING_SYSTEM",
+    "LICENSED_SOFTWARE", "IBEACONS", "SOFTWARE_UPDATES", "EXTENSION_ATTRIBUTES", "CONTENT_CACHING",
+    "GROUP_MEMBERSHIPS"
+};
+
+// All supported sections for v2 mobile device inventory detail endpoint.
+MOBILE_DEVICE_INVENTORY_SECTIONS = {
+    "GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "SECURITY", "APPLICATIONS", "EBOOKS",
+    "NETWORK", "SERVICE_SUBSCRIPTIONS", "CERTIFICATES", "PROFILES", "USER_PROFILES",
+    "PROVISIONING_PROFILES", "SHARED_USERS", "GROUPS", "EXTENSION_ATTRIBUTES"
+};
+
 [DataSource.Kind = "JamfPro", Publish = "JamfPro.Publish"]
 // gets initial jamf URL from user; uses this to make requests
 shared JamfPro.Contents = Value.ReplaceType(
@@ -322,7 +338,7 @@ computers = (url as text, totalPagesCount as number) as table =>
                         each
                             getPageComputers(
                                 url,
-                                {"GENERAL", "DISK_ENCRYPTION", "PURCHASING", "USER_AND_LOCATION", "HARDWARE", "SECURITY", "OPERATING_SYSTEM"},
+                                COMPUTER_INVENTORY_SECTIONS,
                                 _
                             )
                     ),
@@ -385,7 +401,7 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                         pages,
                         each
                             getPageMobileDevices(
-                                url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "SECURITY", "NETWORK", "PURCHASING"}, _
+                                url, MOBILE_DEVICE_INVENTORY_SECTIONS, _
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
