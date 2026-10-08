@@ -1,5 +1,5 @@
 [Version = "2.1.0"]
-section JamfProCanary;
+section JamfPro;
 
 // Number of computer or mobile device records to request per page.
 PAGE_SIZE = 100;
@@ -20,10 +20,10 @@ MOBILE_DEVICE_INVENTORY_SECTIONS = {
     "PROVISIONING_PROFILES", "SHARED_USERS", "GROUPS", "EXTENSION_ATTRIBUTES"
 };
 
-[DataSource.Kind = "JamfProCanary", Publish = "JamfProCanary.Publish"]
+[DataSource.Kind = "JamfPro", Publish = "JamfPro.Publish"]
 // gets initial jamf URL from user; uses this to make requests
-shared JamfProCanary.Contents = Value.ReplaceType(
-    JamfProCanary.JamfNavTable,
+shared JamfPro.Contents = Value.ReplaceType(
+    JamfPro.JamfNavTable,
     type function (
         jamfUrl as (
             Uri.Type meta [
@@ -38,25 +38,48 @@ shared JamfProCanary.Contents = Value.ReplaceType(
     ]
 );
 
+[DataSource.Kind = "JamfProApiClient", Publish = "JamfProApiClient.Publish"]
+shared JamfProApiClient.Contents = Value.ReplaceType(
+    JamfProApiClient.JamfNavTable,
+    type function (
+        jamfUrl as (
+            Uri.Type meta [
+                Documentation.Name = Extension.LoadString("FunctionParamJamfUrlName"),
+                Documentation.FieldCaption = Extension.LoadString("FunctionParamJamfUrlFieldCaption"),
+                Documentation.FieldDescription = Extension.LoadString("FunctionParamJamfUrlFieldDescription"),
+                Documentation.FieldSampleValues = {"https://acme.jamfcloud.com"}
+            ]
+        )
+    ) as text meta [
+        Documentation.Name = Extension.LoadString("FunctionNameApiClient")
+    ]
+);
+
+shared JamfPro.JamfNavTable = (url as text) as table =>
+    JamfNavTable(url, "UserPassword");
+
+shared JamfProApiClient.JamfNavTable = (url as text) as table =>
+    JamfNavTable(url, "ApiClient");
+
 // sets initial navigation table that links to individual table queries
-shared JamfProCanary.JamfNavTable = (url as text) as table =>
+JamfNavTable = (url as text, authMode as text) as table =>
     let
         url = validateUrlScheme(url),
-        computerPages = getTotalNumberOfPages(url, "v4/computers-inventory"),
-        mobileDevicesPages = getTotalNumberOfPages(url, "v2/mobile-devices"),
+        computerPages = getTotalNumberOfPages(url, "v4/computers-inventory", authMode),
+        mobileDevicesPages = getTotalNumberOfPages(url, "v2/mobile-devices", authMode),
         source = #table(
             {"Name", "Data", "ItemKind", "ItemName", "IsLeaf"},
             {
-                {"Computers", computers(url, computerPages), "Table", "Table", true},
-                {"Computers - Storage", computerStorage(url, computerPages), "Table", "Table", true},
-                {"Computers - Patch Status", computerPatchStatus(url), "Table", "Table", true},
-                {"Computer Device Groups", computerGroups(url), "Table", "Table", true},
-                {"Computers - Applications", computerApplications(url, computerPages), "Table", "Table", true},
-                {"Computers - Extension attributes", computerExtensionAttributes(url, computerPages), "Table", "Table", true},
-                {"Mobile Devices", mobileDevices(url, mobileDevicesPages), "Table", "Table", true},
-                {"Mobile - Applications", mobileDeviceApplications(url, mobileDevicesPages), "Table", "Table", true},
-                {"Mobile Device Groups", mobileDeviceGroups(url), "Table", "Table", true},
-                {"Mobile Devices - ExtensionAttributes", mobileDeviceExtensionAtttributes(url, mobileDevicesPages), "Table", "Table", true}
+                {"Computers", computers(url, computerPages, authMode), "Table", "Table", true},
+                {"Computers - Storage", computerStorage(url, computerPages, authMode), "Table", "Table", true},
+                {"Computers - Patch Status", computerPatchStatus(url, authMode), "Table", "Table", true},
+                {"Computer Device Groups", computerGroups(url, authMode), "Table", "Table", true},
+                {"Computers - Applications", computerApplications(url, computerPages, authMode), "Table", "Table", true},
+                {"Computers - Extension attributes", computerExtensionAttributes(url, computerPages, authMode), "Table", "Table", true},
+                {"Mobile Devices", mobileDevices(url, mobileDevicesPages, authMode), "Table", "Table", true},
+                {"Mobile - Applications", mobileDeviceApplications(url, mobileDevicesPages, authMode), "Table", "Table", true},
+                {"Mobile Device Groups", mobileDeviceGroups(url, authMode), "Table", "Table", true},
+                {"Mobile Devices - ExtensionAttributes", mobileDeviceExtensionAtttributes(url, mobileDevicesPages, authMode), "Table", "Table", true}
             }
         ),
         navTable = Table.ToNavigationTable(source, {"Name"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
@@ -75,22 +98,22 @@ removeTrailingSlash = (url as text) as text =>
     else
         url;
 
-getTotalNumberOfPages = (url as text, relativePath as text) as number =>
+getTotalNumberOfPages = (url as text, relativePath as text, optional authMode as text) as number =>
     let
         totalCount = UAPIResource(
-            url, "api/" & relativePath, [#"page-size" = Text.From(PAGE_SIZE)]
+            url, "api/" & relativePath, [#"page-size" = Text.From(PAGE_SIZE)], null, null, authMode
         )[totalCount],
         pages = if totalCount = 0 then 0 else Number.RoundUp(totalCount / PAGE_SIZE)
     in
         pages;
 
-getPageComputers = (url as text, sections as list, page as number) as list =>
-    getPage(url, sections, page, "api/v4/computers-inventory", "id");
+getPageComputers = (url as text, sections as list, page as number, optional authMode as text) as list =>
+    getPage(url, sections, page, "api/v4/computers-inventory", "id", authMode);
 
-getPageMobileDevices = (url as text, sections as list, page as number) as list =>
-    getPage(url, sections, page, "api/v2/mobile-devices/detail", "mobileDeviceId");
+getPageMobileDevices = (url as text, sections as list, page as number, optional authMode as text) as list =>
+    getPage(url, sections, page, "api/v2/mobile-devices/detail", "mobileDeviceId", authMode);
 
-getPage = (url as text, sections as list, page as number, path as text, sortKey as text) as list =>
+getPage = (url as text, sections as list, page as number, path as text, sortKey as text, optional authMode as text) as list =>
     let
         result = UAPIResource(
             url,
@@ -100,7 +123,10 @@ getPage = (url as text, sections as list, page as number, path as text, sortKey 
                 page = Text.From(page),
                 section = sections,
                 sort = sortKey
-            ]
+            ],
+            null,
+            null,
+            authMode
         )[results]
     in
         result;
@@ -111,9 +137,9 @@ buildPagedQuery = (page as number, optional sort as nullable text) as record =>
     else
         [#"page-size" = Text.From(PAGE_SIZE), page = Text.From(page), sort = sort];
 
-getPagedResourceResults = (url as text, relativePath as text, optional sort as nullable text) as list =>
+getPagedResourceResults = (url as text, relativePath as text, optional sort as nullable text, optional authMode as text) as list =>
     let
-        firstPage = try UAPIResource(url, relativePath, buildPagedQuery(0, sort)) otherwise null,
+        firstPage = try UAPIResource(url, relativePath, buildPagedQuery(0, sort), null, null, authMode) otherwise null,
         firstResults = if firstPage = null then {} else (try firstPage[results] as list otherwise {}),
         totalCount = if firstPage = null then 0 else (try Number.From(firstPage[totalCount]) otherwise List.Count(firstResults)),
         totalPages = if totalCount = 0 then 0 else Number.RoundUp(totalCount / PAGE_SIZE),
@@ -124,7 +150,7 @@ getPagedResourceResults = (url as text, relativePath as text, optional sort as n
                 List.Transform(
                     {1..totalPages - 1},
                     each
-                        try UAPIResource(url, relativePath, buildPagedQuery(_, sort))[results]
+                        try UAPIResource(url, relativePath, buildPagedQuery(_, sort), null, null, authMode)[results]
                         otherwise
                             {}
                 ),
@@ -147,22 +173,22 @@ patchReleaseDateToDate = (releaseDate as nullable text) as nullable date =>
     in
         parsedDate;
 
-getPatchDefinitions = (url as text, configurationId as text) as list =>
-    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/definitions", "absoluteOrderId:asc");
+getPatchDefinitions = (url as text, configurationId as text, optional authMode as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/definitions", "absoluteOrderId:asc", authMode);
 
-getPatchReportRows = (url as text, configurationId as text) as list =>
-    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/patch-report", "computerName:asc");
+getPatchReportRows = (url as text, configurationId as text, optional authMode as text) as list =>
+    getPagedResourceResults(url, "api/v3/patch-software-title-configurations/" & configurationId & "/patch-report", "computerName:asc", authMode);
 
 // Modern Jamf Pro API implementation for Mobile Device Groups
-mobileDeviceGroups = (url as text) as table =>
+mobileDeviceGroups = (url as text, optional authMode as text) as table =>
     let
-        jsonDeviceGroups = UAPIResource(url, "api/v1/mobile-device-groups"),
+        jsonDeviceGroups = UAPIResource(url, "api/v1/mobile-device-groups", null, null, null, authMode),
         deviceGroups = Table.FromRecords(jsonDeviceGroups[results]),
         selectedColumns = Table.SelectColumns(deviceGroups, {"id", "name", "isSmart"}),
         groupsPlusMembership = Table.AddColumn(
             selectedColumns,
             "temp_column",
-            each getMobileDeviceMembership(Number.From([id]), [isSmart], url),
+            each getMobileDeviceMembership(Number.From([id]), [isSmart], url, authMode),
             type list
         ),
         tempTable = Table.ExpandListColumn(groupsPlusMembership, "temp_column"),
@@ -183,15 +209,15 @@ mobileDeviceGroups = (url as text) as table =>
         mobileDeviceGroupExpanded;
 
 // Modern Jamf Pro API implementation for Computer Groups
-computerGroups = (url as text) as table =>
+computerGroups = (url as text, optional authMode as text) as table =>
     let
-        jsonComputerGroups = UAPIResource(url, "api/v1/computer-groups"),
+        jsonComputerGroups = UAPIResource(url, "api/v1/computer-groups", null, null, null, authMode),
         computerGroups = Table.FromRecords(jsonComputerGroups[results]),
         selectedColumns = Table.SelectColumns(computerGroups, {"id", "name", "isSmart"}),
         computerGroupsModified = Table.AddColumn(
             selectedColumns,
             "temp_column",
-            each getComputerGroupMembershipIds(Number.From([id]), [isSmart], url),
+            each getComputerGroupMembershipIds(Number.From([id]), [isSmart], url, authMode),
             type list
         ),
         tempTable = Table.ExpandListColumn(computerGroupsModified, "temp_column"),
@@ -204,26 +230,26 @@ computerGroups = (url as text) as table =>
     in
         computerGroupsModifiedExpanded;
 
-getComputerGroupMembershipIds = (id as number, isSmart as logical, baseUrl as text) as list =>
+getComputerGroupMembershipIds = (id as number, isSmart as logical, baseUrl as text, optional authMode as text) as list =>
     let
         relativePath =
             if isSmart then
                 "api/v2/computer-groups/smart-groups/" & Number.ToText(id)
             else
                 "api/v2/computer-groups/static-groups/" & Number.ToText(id),
-        jsonGroupDetails = try UAPIResource(baseUrl, relativePath) otherwise [],
+        jsonGroupDetails = try UAPIResource(baseUrl, relativePath, null, null, null, authMode) otherwise [],
         computerGroupMembers = try jsonGroupDetails[computers] as list otherwise {}
     in
         computerGroupMembers;
 
-getMobileDeviceMembership = (id as number, isSmart as logical, baseUrl as text) as list =>
+getMobileDeviceMembership = (id as number, isSmart as logical, baseUrl as text, optional authMode as text) as list =>
     let
         relativePath =
             if isSmart then
                 "api/v1/mobile-device-groups/smart-groups/" & Number.ToText(id)
             else
                 "api/v1/mobile-device-groups/static-groups/" & Number.ToText(id),
-        jsonGroupDetails = try UAPIResource(baseUrl, relativePath) otherwise [],
+        jsonGroupDetails = try UAPIResource(baseUrl, relativePath, null, null, null, authMode) otherwise [],
         mobileDeviceGroupMembers = try jsonGroupDetails[mobileDevices] as list otherwise {}
     in
         mobileDeviceGroupMembers;
@@ -234,7 +260,8 @@ UAPIResource = (
     relativepath as text,
     optional query as record,
     optional token as text,
-    optional attempts as number
+    optional attempts as number,
+    optional authMode as text
 ) =>
     let
         number_of_attempts = if attempts = null then 1 else (attempts + 1),
@@ -245,7 +272,7 @@ UAPIResource = (
                     [
                         Headers = [
                             #"Accept" = "application/json",
-                            #"Authorization" = TokenAuthorizationHeader(baseUrl)
+                            #"Authorization" = TokenAuthorizationHeader(baseUrl, false, authMode)
                         ],
                         RelativePath = relativepath,
                         ManualStatusHandling = {429, 401},
@@ -279,8 +306,9 @@ UAPIResource = (
                             baseUrl,
                             relativepath,
                             query,
-                            TokenAuthorizationHeader(baseUrl, true),
-                            number_of_attempts
+                            TokenAuthorizationHeader(baseUrl, true, authMode),
+                            number_of_attempts,
+                            authMode
                         ),
                     #duration(0, 0, 0, 3)
                 )
@@ -290,11 +318,14 @@ UAPIResource = (
         json;
 
 // Retrieves token for auth header in API calls.
-// Supports either Jamf user credentials or API Client credentials entered as Username + Password.
-TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
+// Auth mode controls which endpoint is used:
+// - UserPassword: /api/v1/auth/token
+// - ApiClient: /api/v1/oauth/token
+TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical, optional authMode as text) =>
     let
         credentials = Extension.CurrentCredential(),
         retry = if isRetry <> null then isRetry else false,
+        mode = if authMode = null then "UserPassword" else authMode,
         token =
             if credentials[AuthenticationKind] = "Key" then
                 let
@@ -318,66 +349,44 @@ TokenAuthorizationHeader = (baseUrl as text, optional isRetry as logical) =>
                     )[access_token]
                 in
                     accessToken
-            else
-                let
-                    basicTokenResponse =
-                        try
-                            Json.Document(
-                                Web.Contents(
-                                    baseUrl,
+            else if mode = "ApiClient" then
+                Json.Document(
+                    Web.Contents(
+                        baseUrl,
+                        [
+                            Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
+                            RelativePath = "/api/v1/oauth/token",
+                            Content = Text.ToBinary(
+                                Uri.BuildQueryString(
                                     [
-                                        Headers = [],
-                                        RelativePath = "/api/v1/auth/token",
-                                        Content = Text.ToBinary(""),
-                                        IsRetry = retry
+                                        client_id = credentials[Username],
+                                        client_secret = credentials[Password],
+                                        grant_type = "client_credentials"
                                     ]
                                 )
-                            )
-                        otherwise
-                            null,
-                    basicToken = try basicTokenResponse[token] otherwise null,
-                    oauthTokenResponse =
-                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
-                            null
-                        else
-                            try
-                                Json.Document(
-                                    Web.Contents(
-                                        baseUrl,
-                                        [
-                                            Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
-                                            RelativePath = "/api/v1/oauth/token",
-                                            Content = Text.ToBinary(
-                                                Uri.BuildQueryString(
-                                                    [
-                                                        client_id = credentials[Username],
-                                                        client_secret = credentials[Password],
-                                                        grant_type = "client_credentials"
-                                                    ]
-                                                )
-                                            ),
-                                            IsRetry = retry
-                                        ]
-                                    )
-                                )
-                            otherwise
-                                null,
-                    oauthToken = try oauthTokenResponse[access_token] otherwise null,
-                    selectedToken =
-                        if Value.Is(basicToken, type text) and Text.Length(basicToken) > 0 then
-                            basicToken
-                        else if Value.Is(oauthToken, type text) and Text.Length(oauthToken) > 0 then
-                            oauthToken
-                        else
-                            error "Unable to obtain a Jamf Pro API token with the supplied credentials."
-                in
-                    selectedToken,
+                            ),
+                            IsRetry = retry
+                        ]
+                    )
+                )[access_token]
+            else
+                Json.Document(
+                    Web.Contents(
+                        baseUrl,
+                        [
+                            Headers = [],
+                            RelativePath = "/api/v1/auth/token",
+                            Content = Text.ToBinary(""),
+                            IsRetry = retry
+                        ]
+                    )
+                )[token],
 
         token_header = "Bearer " & token
     in
         token_header;
 
-computerApplications = (url as text, totalPagesCount as number) as table =>
+computerApplications = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         fieldNamesFromApi = {"name", "path", "version"},
         fieldNamesForTable = {
@@ -393,7 +402,7 @@ computerApplications = (url as text, totalPagesCount as number) as table =>
                 let
                     pages = {0..totalPagesCount - 1},
                     listOfPages = List.Transform(
-                        pages, each getPageComputers(url, {"GENERAL", "APPLICATIONS"}, _)
+                        pages, each getPageComputers(url, {"GENERAL", "APPLICATIONS"}, _, authMode)
                     ),
                     rowPerComputer = List.Combine(listOfPages),
                     data = Table.FromRecords(rowPerComputer),
@@ -409,7 +418,7 @@ computerApplications = (url as text, totalPagesCount as number) as table =>
         result;
 
 // Computer lookup and mapping function.
-computers = (url as text, totalPagesCount as number) as table =>
+computers = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         apiFieldsTopLevel = {"id", "udid", "general", "diskEncryption", "purchasing", "userAndLocation", "hardware", "security", "operatingSystem"},
         tableFieldsTopLevel = {"id", "computerDetails.udid"},
@@ -436,7 +445,8 @@ computers = (url as text, totalPagesCount as number) as table =>
                             getPageComputers(
                                 url,
                                 COMPUTER_INVENTORY_SECTIONS,
-                                _
+                                _,
+                                authMode
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
@@ -462,14 +472,14 @@ computers = (url as text, totalPagesCount as number) as table =>
                     withUnmappedColumns = addUnmappedColumns(expandDiskEncryption, ComputerMappings[UnmappedFields]),
                     withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, ComputerMappings[UtcColumnNames]),
                     withDuplicateColumns = duplicateColumns(withEpochColumns, ComputerMappings[FieldsToDuplicate]),
-                    withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
-                    withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, ComputerMappings[AdditionalSectionJsonFields])
+                    withAdditionalSectionJson = serialiseSectionColumns(withDuplicateColumns, ComputerMappings[AdditionalSectionJsonFields]),
+                    finalResult = Table.RemoveColumns(withAdditionalSectionJson, additionalSectionSources, MissingField.Ignore)
                 in
-                    withRenamedSectionColumns
+                    finalResult
     in
         result;
 
-computerStorage = (url as text, totalPagesCount as number) as table =>
+computerStorage = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         emptyTable = #table({"id", "computer_name", "computerDetails.storage_json"}, {}),
         result =
@@ -480,7 +490,7 @@ computerStorage = (url as text, totalPagesCount as number) as table =>
                     pages = {0..totalPagesCount - 1},
                     listOfPages = List.Transform(
                         pages,
-                        each getPageComputers(url, {"GENERAL", "STORAGE"}, _)
+                        each getPageComputers(url, {"GENERAL", "STORAGE"}, _, authMode)
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
@@ -497,7 +507,7 @@ computerStorage = (url as text, totalPagesCount as number) as table =>
     in
         result;
 
-computerPatchStatus = (url as text) as table =>
+computerPatchStatus = (url as text, optional authMode as text) as table =>
     let
         columnNames = {
             "patch_configuration_id",
@@ -520,15 +530,15 @@ computerPatchStatus = (url as text) as table =>
             "more_than_30_days_since_release"
         },
         emptyTable = #table(columnNames, {}),
-        patchConfigurations = try UAPIResource(url, "api/v3/patch-software-title-configurations") otherwise {},
+        patchConfigurations = try UAPIResource(url, "api/v3/patch-software-title-configurations", null, null, null, authMode) otherwise {},
         configurationRows = if Value.Is(patchConfigurations, type list) then patchConfigurations else {},
         patchRowsByConfiguration = List.Transform(
             configurationRows,
             (configuration) =>
                 let
                     configurationId = try Text.From(configuration[id]) otherwise null,
-                    definitions = if configurationId = null then {} else getPatchDefinitions(url, configurationId),
-                    reportRows = if configurationId = null then {} else getPatchReportRows(url, configurationId),
+                    definitions = if configurationId = null then {} else getPatchDefinitions(url, configurationId, authMode),
+                    reportRows = if configurationId = null then {} else getPatchReportRows(url, configurationId, authMode),
                     reportRowsEnriched = List.Transform(
                         reportRows,
                         (reportRow) =>
@@ -581,7 +591,7 @@ computerPatchStatus = (url as text) as table =>
         result;
 
 // Mobile device lookup and mapping function.
-mobileDevices = (url as text, totalPagesCount as number) as table =>
+mobileDevices = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         apiFieldsTopLevel = {"mobileDeviceId", "deviceType", "general", "hardware", "userAndLocation", "security", "purchasing", "network"},
         tableFieldsTopLevel = {"id", "mobileDeviceDetails.os_type"},
@@ -613,7 +623,7 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
                         pages,
                         each
                             getPageMobileDevices(
-                                url, MOBILE_DEVICE_INVENTORY_SECTIONS, _
+                                url, MOBILE_DEVICE_INVENTORY_SECTIONS, _, authMode
                             )
                     ),
                     rowPerDevice = List.Combine(listOfPages),
@@ -636,12 +646,12 @@ mobileDevices = (url as text, totalPagesCount as number) as table =>
         withUnmappedColumns = addUnmappedColumns(result, MobileDeviceMappings[UnmappedFields]),
         withEpochColumns = copyUtcColumnsToEpoch(withUnmappedColumns, MobileDeviceMappings[UtcColumnNames]),
         withDuplicateColumns = duplicateColumns(withEpochColumns, MobileDeviceMappings[FieldsToDuplicate]),
-        withNormalisedSectionColumns = normaliseNestedColumns(withDuplicateColumns),
-        withRenamedSectionColumns = renameFlattenedSectionColumns(withNormalisedSectionColumns, MobileDeviceMappings[AdditionalSectionJsonFields])
+        withAdditionalSectionJson = serialiseSectionColumns(withDuplicateColumns, MobileDeviceMappings[AdditionalSectionJsonFields]),
+        finalResult = Table.RemoveColumns(withAdditionalSectionJson, additionalSectionSources, MissingField.Ignore)
     in
-        withRenamedSectionColumns;
+        finalResult;
 
-mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
+mobileDeviceApplications = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         apiFieldsGeneral = {"displayName", "udid", "managed", "supervised"},
         tableFieldsGeneral = {"name", "udid", "managed", "supervised"},
@@ -670,7 +680,7 @@ mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
                     listOfPages = List.Transform(
                         pages,
                         each
-                            getPageMobileDevices(url, {"GENERAL", "APPLICATIONS", "HARDWARE", "USER_AND_LOCATION"}, _)
+                            getPageMobileDevices(url, {"GENERAL", "APPLICATIONS", "HARDWARE", "USER_AND_LOCATION"}, _, authMode)
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
@@ -691,7 +701,7 @@ mobileDeviceApplications = (url as text, totalPagesCount as number) as table =>
     in
         withDuplicateColumns;
 
-computerExtensionAttributes = (url as text, totalPagesCount as number) as table =>
+computerExtensionAttributes = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         fieldNamesForTable = {"computerDetails.extAttrs.id", "computerDetails.extAttrs.name", "computerDetails.extAttrs.type", "computerDetails.extAttrs.value"},
         emptyTable = #table(List.Combine({{"id", "name"}, fieldNamesForTable}), {}),
@@ -703,7 +713,7 @@ computerExtensionAttributes = (url as text, totalPagesCount as number) as table 
                     pages = {0..totalPagesCount - 1},
                     listOfPages = List.Transform(
                         pages, each getPageComputers(
-                            url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "OPERATING_SYSTEM", "EXTENSION_ATTRIBUTES"}, _
+                            url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "OPERATING_SYSTEM", "EXTENSION_ATTRIBUTES"}, _, authMode
                         )
                     ),
                     rowPerComputer = List.Combine(listOfPages),
@@ -732,7 +742,7 @@ computerExtensionAttributes = (url as text, totalPagesCount as number) as table 
     in
         result;
 
-mobileDeviceExtensionAtttributes = (url as text, totalPagesCount as number) as table =>
+mobileDeviceExtensionAtttributes = (url as text, totalPagesCount as number, optional authMode as text) as table =>
     let
         apiFieldsGeneral = {"displayName", "udid", "managed", "supervised", "extensionAttributes"},
         tableFieldsGeneral = {"name", "udid", "managed", "supervised", "general.extensionAttributes"},
@@ -762,7 +772,7 @@ mobileDeviceExtensionAtttributes = (url as text, totalPagesCount as number) as t
                     listOfPages = List.Transform(
                         pages,
                         each
-                            getPageMobileDevices(url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "EXTENSION_ATTRIBUTES"}, _)
+                            getPageMobileDevices(url, {"GENERAL", "HARDWARE", "USER_AND_LOCATION", "PURCHASING", "EXTENSION_ATTRIBUTES"}, _, authMode)
                     ),
                     rowPerDevice = List.Combine(listOfPages),
                     selectedColumns = Table.FromRecords(
@@ -831,6 +841,24 @@ copyUtcColumnsToEpoch = (t as table, utcColumnNames as list) as table =>
     in
         addEpochColumns;
 
+serialiseSectionColumns = (t as table, sectionMappings as list) as table =>
+    let
+        toJsonText = (value as any) as nullable text =>
+            if value = null then null else Text.FromBinary(Json.FromValue(value)),
+        result = List.Accumulate(
+            sectionMappings,
+            t,
+            (state, current) =>
+                Table.AddColumn(
+                    state,
+                    current[mapped],
+                    each try toJsonText(Record.Field(_, current[source])) otherwise null,
+                    type nullable text
+                )
+        )
+    in
+        result;
+
 columnContainsType = (columnValues as list, valueType as type) as logical =>
     List.AnyTrue(List.Transform(columnValues, each _ <> null and Value.Is(_, valueType)));
 
@@ -864,7 +892,7 @@ expandRecordColumns = (t as table) as table =>
 expandRecordsRecursively = (t as table) as table =>
     let
         expanded = expandRecordColumns(t),
-        madeProgress = not List.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
+        madeProgress = not Value.Equals(Table.ColumnNames(expanded), Table.ColumnNames(t)),
         hasRecordColumns = List.AnyTrue(
             List.Transform(
                 Table.ColumnNames(expanded),
@@ -958,8 +986,8 @@ duplicateColumns = (t as table, fieldsToDuplicate as list) as table =>
         result;
 
 // Data Source definition
-JamfProCanary = [
-    TestConnection = (dataSourcePath) => {"JamfProCanary.JamfNavTable", dataSourcePath},
+JamfPro = [
+    TestConnection = (dataSourcePath) => {"JamfPro.JamfNavTable", dataSourcePath},
     Authentication = [
         UsernamePassword = [
             Label = Extension.LoadString("AuthLabelUsernamePassword")
@@ -968,11 +996,32 @@ JamfProCanary = [
     Label = Extension.LoadString("DataSourceLabel")
 ];
 
+JamfProApiClient = [
+    TestConnection = (dataSourcePath) => {"JamfProApiClient.JamfNavTable", dataSourcePath},
+    Authentication = [
+        UsernamePassword = [
+            Label = Extension.LoadString("AuthLabelApiClientUsernamePassword"),
+            UsernameLabel = Extension.LoadString("AuthLabelApiClientUsernameLabel"),
+            PasswordLabel = Extension.LoadString("AuthLabelApiClientPasswordLabel")
+        ]
+    ],
+    Label = Extension.LoadString("DataSourceLabelApiClient")
+];
+
 // Data Source UI publishing description
-JamfProCanary.Publish = [
+JamfPro.Publish = [
     Beta = false,
     Category = "Other",
     ButtonText = {Extension.LoadString("ButtonTitle"), Extension.LoadString("ButtonHelp")},
+    LearnMoreUrl = "https://marketplace.jamf.com/details/power-bi",
+    SourceImage = JamfPro__Get_Devices.Icons,
+    SourceTypeImage = JamfPro__Get_Devices.Icons
+];
+
+JamfProApiClient.Publish = [
+    Beta = false,
+    Category = "Other",
+    ButtonText = {Extension.LoadString("ButtonTitleApiClient"), Extension.LoadString("ButtonHelpApiClient")},
     LearnMoreUrl = "https://marketplace.jamf.com/details/power-bi",
     SourceImage = JamfPro__Get_Devices.Icons,
     SourceTypeImage = JamfPro__Get_Devices.Icons

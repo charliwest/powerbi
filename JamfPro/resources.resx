@@ -118,7 +118,10 @@
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
   <data name="FunctionName" xml:space="preserve">
-    <value>Jamf Pro Canary</value>
+    <value>Jamf Pro</value>
+  </data>
+  <data name="FunctionNameApiClient" xml:space="preserve">
+    <value>Jamf Pro (API Client)</value>
   </data>
   <data name="FunctionParamJamfUrlName" xml:space="preserve">
     <value>URL</value>
@@ -133,12 +136,30 @@
     <value>Import data from Jamf Pro</value>
   </data>
   <data name="ButtonTitle" xml:space="preserve">
-    <value>Jamf Pro Canary</value>
+    <value>Jamf Pro</value>
+  </data>
+  <data name="ButtonHelpApiClient" xml:space="preserve">
+    <value>Import data from Jamf Pro using API Client credentials</value>
+  </data>
+  <data name="ButtonTitleApiClient" xml:space="preserve">
+    <value>Jamf Pro (API Client)</value>
   </data>
   <data name="DataSourceLabel" xml:space="preserve">
-    <value>Jamf Pro Canary</value>
+    <value>Jamf Pro</value>
+  </data>
+  <data name="DataSourceLabelApiClient" xml:space="preserve">
+    <value>Jamf Pro (API Client)</value>
   </data>
   <data name="AuthLabelUsernamePassword" xml:space="preserve">
-    <value>Username/Password or API Client ID/Secret</value>
+    <value>Username Password</value>
+  </data>
+  <data name="AuthLabelApiClientUsernamePassword" xml:space="preserve">
+    <value>API Client ID and Secret</value>
+  </data>
+  <data name="AuthLabelApiClientUsernameLabel" xml:space="preserve">
+    <value>API Client ID</value>
+  </data>
+  <data name="AuthLabelApiClientPasswordLabel" xml:space="preserve">
+    <value>API Client Secret</value>
   </data>
 </root>
